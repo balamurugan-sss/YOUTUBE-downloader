@@ -116,7 +116,10 @@ def _clean_error(exc: Exception) -> str:
     if "Unsupported URL" in msg:
         return "This link is not supported. Try a direct video/post link."
     low = msg.lower()
-    if "not a bot" in low or "confirm you" in low:
+    if "unable to connect" in low or "proxyerror" in low or "timed out" in low or "connection refused" in low \
+            or "name or service not known" in low or "getaddrinfo failed" in low:
+        return "Couldn't connect to the website. Check your internet connection (or firewall/proxy) and try again."
+    if "not a bot" in low:
         return ("YouTube is blocking this server as a bot. Run VidFetch on your own computer, "
                 "or set VIDFETCH_COOKIES to a cookies.txt from a logged-in browser (see README).")
     if "javascript runtime" in low or "n challenge" in low or ("signature" in low and "solv" in low):
