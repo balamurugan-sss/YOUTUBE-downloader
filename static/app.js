@@ -47,9 +47,23 @@
   });
 
   const api = async (path, body) => {
-    const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail?.[0]?.msg || data.detail || "Something went wrong. Please try again.");
+    let r;
+    try {
+      r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+    } catch {
+      throw new Error("Can't reach the VidFetch server. Make sure `python app.py` is running and open http://localhost:8000");
+    }
+    const data = await r.json().catch(() => null);
+    if (!data) {
+      // Not JSON: the page is being served by something other than app.py (Live Server, file://, static hosting)
+      throw new Error([404, 405, 501].includes(r.status)
+        ? `The download server isn't running here (HTTP ${r.status}). Start it with \`python app.py\` and open http://localhost:8000 — don't open index.html directly or with Live Server.`
+        : `Server error (HTTP ${r.status}). Check the terminal running app.py for details.`);
+    }
+    if (!r.ok) {
+      const d = data.detail;
+      throw new Error(Array.isArray(d) ? d.map((x) => x.msg).join(", ") : d || `Request failed (HTTP ${r.status}).`);
+    }
     return data;
   };
 

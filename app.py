@@ -8,6 +8,7 @@ Supports YouTube and the 1000+ sites yt-dlp understands
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import yt_dlp
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,7 +38,33 @@ COOKIES_FILE = os.environ.get("VIDFETCH_COOKIES")  # optional cookies.txt for ag
 VIDEO_HEIGHTS = [2160, 1440, 1080, 720, 480, 360, 240, 144]
 AUDIO_FORMATS = {"mp3", "m4a", "opus", "wav"}
 
+log = logging.getLogger("vidfetch")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 app = FastAPI(title="VidFetch", docs_url="/api/docs", redoc_url=None)
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    """Always answer the frontend with JSON, and log the full traceback."""
+    log.exception("Unhandled error on %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": f"Server error: {_clean_error(exc)}"})
+
+
+def _detect_js_runtimes() -> dict:
+    """yt-dlp needs a JavaScript runtime (Deno, Node or Bun) to read YouTube."""
+    found = {}
+    for name in ("deno", "node", "bun"):
+        path = shutil.which(name)
+        if path:
+            found[name] = {"path": path}
+    return found
+
+
+JS_RUNTIMES = _detect_js_runtimes()
+if not JS_RUNTIMES:
+    log.warning("No JavaScript runtime found (deno/node/bun). YouTube downloads will likely fail. "
+                "Install Deno: https://deno.com")
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -72,6 +99,10 @@ def _base_opts() -> dict:
         "concurrent_fragment_downloads": 4,
         "restrictfilenames": True,
     }
+    if JS_RUNTIMES:
+        opts["js_runtimes"] = JS_RUNTIMES
+    # fetch the YouTube challenge solver scripts if the yt-dlp-ejs package is missing
+    opts["remote_components"] = ["ejs:github"]
     if COOKIES_FILE and Path(COOKIES_FILE).is_file():
         opts["cookiefile"] = COOKIES_FILE
     if shutil.which("ffmpeg") is None:
@@ -84,7 +115,15 @@ def _clean_error(exc: Exception) -> str:
     msg = msg.replace("ERROR: ", "")
     if "Unsupported URL" in msg:
         return "This link is not supported. Try a direct video/post link."
-    if "Private video" in msg or "login" in msg.lower() or "sign in" in msg.lower():
+    low = msg.lower()
+    if "not a bot" in low or "confirm you" in low:
+        return ("YouTube is blocking this server as a bot. Run VidFetch on your own computer, "
+                "or set VIDFETCH_COOKIES to a cookies.txt from a logged-in browser (see README).")
+    if "javascript runtime" in low or "n challenge" in low or ("signature" in low and "solv" in low):
+        return "YouTube needs a JavaScript runtime. Install Deno (https://deno.com) or Node.js and restart."
+    if "Requested format is not available" in msg:
+        return "That quality isn't available for this video. Try another option."
+    if "Private video" in msg or "login" in low or "sign in" in low:
         return "This video needs a login (private, age-restricted or members-only)."
     if "Video unavailable" in msg:
         return "This video is unavailable."
@@ -134,10 +173,14 @@ def get_info(req: InfoRequest):
     except yt_dlp.utils.DownloadError as exc:
         raise HTTPException(422, _clean_error(exc))
     except Exception as exc:  # noqa: BLE001
+        log.exception("info failed for %s", url)
         raise HTTPException(500, _clean_error(exc))
 
+    if not info:
+        raise HTTPException(422, "Couldn't read that link. Check the URL and try again.")
     if info.get("_type") == "playlist" and info.get("entries"):
         info = next((e for e in info["entries"] if e), info)
+    log.info("info ok: %s (%s, %d formats)", info.get("title"), info.get("extractor_key"), len(info.get("formats") or []))
 
     formats = info.get("formats") or []
     duration = info.get("duration") or 0
@@ -295,6 +338,7 @@ def _run_job(job_id: str, req: DownloadRequest):
             _job_update(job_id, status="done", progress=100, filename=final.name,
                         path=str(final), size=_fmt_size(final.stat().st_size))
         except Exception as exc:  # noqa: BLE001
+            log.exception("download failed for %s", req.url)
             _job_update(job_id, status="error", error=_clean_error(exc))
             shutil.rmtree(job_dir, ignore_errors=True)
 
@@ -359,7 +403,8 @@ def _startup():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "ffmpeg": shutil.which("ffmpeg") is not None, "yt_dlp": yt_dlp.version.__version__}
+    return {"ok": True, "ffmpeg": shutil.which("ffmpeg") is not None,
+            "js_runtimes": list(JS_RUNTIMES), "yt_dlp": yt_dlp.version.__version__}
 
 
 app.mount("/", StaticFiles(directory=BASE_DIR / "static", html=True), name="static")

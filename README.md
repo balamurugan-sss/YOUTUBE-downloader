@@ -13,7 +13,12 @@ Built with **FastAPI** + **yt-dlp** + **ffmpeg**, and a plain HTML/CSS/JS fronte
 
 ## Run locally
 
-Requirements: Python 3.10+ and [ffmpeg](https://ffmpeg.org/download.html) on your PATH.
+Requirements:
+- Python 3.10+
+- [ffmpeg](https://ffmpeg.org/download.html) on your PATH
+- A JavaScript runtime for YouTube: [Deno](https://deno.com) (recommended), Node.js or Bun
+
+Install Deno: `winget install DenoLand.Deno` (Windows), `brew install deno` (macOS) or `curl -fsSL https://deno.land/install.sh | sh` (Linux).
 
 ```bash
 pip install -r requirements.txt
@@ -48,12 +53,24 @@ Use the Dockerfile, expose port `8000` (or set `PORT`).
 | `VIDFETCH_MAX_FILESIZE` | unset | Optional cap, e.g. `2G` |
 | `VIDFETCH_COOKIES` | unset | Path to a Netscape `cookies.txt` for age-restricted / login-only videos |
 
+## Troubleshooting
+
+Open http://localhost:8000/api/health — it should show `ffmpeg: true` and at least one entry in `js_runtimes`.
+The terminal running `python app.py` logs the full error for every failed link.
+
+| Message | Fix |
+|---|---|
+| *The download server isn't running here* | You opened `index.html` directly or with Live Server. Run `python app.py` and open http://localhost:8000 |
+| *YouTube needs a JavaScript runtime* | Install Deno (above), then restart `python app.py` |
+| *YouTube is blocking this server as a bot* | Common on cloud servers. Run locally, or export a `cookies.txt` from a logged-in browser and set `VIDFETCH_COOKIES` |
+| Anything else on YouTube | `pip install -U "yt-dlp[default]"` — YouTube changes often |
+
 ## Keep it working
 
 Sites change often. When a site stops working, update yt-dlp:
 
 ```bash
-pip install -U yt-dlp
+pip install -U "yt-dlp[default]"
 ```
 
 (The Docker image updates yt-dlp automatically on each start.)
